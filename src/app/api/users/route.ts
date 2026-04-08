@@ -1,19 +1,31 @@
 import { NextResponse } from "next/server";
 
-import { readTrackedUsers, writeTrackedUsers } from "@/lib/app-data";
-import type { AddUsersBatchResult, TrackedUser } from "@/types/dashboard";
+import { readAppData, writeAppData } from "@/lib/app-data";
+import type {
+  AddUsersBatchResult,
+  MetricsSnapshot,
+  TrackedUser,
+} from "@/types/dashboard";
 import {
   isValidGithubUsername,
   normalizeGithubUsername,
 } from "@/lib/validators";
 
-type AddUsersRequestBody =
-  | { username?: string; usernames?: string[] }
-  | null;
+type AddUsersRequestBody = { username?: string; usernames?: string[] } | null;
+
+type UsersResponseBody = {
+  users: TrackedUser[];
+  snapshot: MetricsSnapshot | null;
+};
 
 export async function GET() {
-  const trackedUsers = await readTrackedUsers();
-  return NextResponse.json({ users: trackedUsers });
+  const appData = await readAppData();
+  const payload: UsersResponseBody = {
+    users: appData.trackedUsers,
+    snapshot: appData.metricsSnapshot,
+  };
+
+  return NextResponse.json(payload);
 }
 
 export async function POST(request: Request) {
@@ -38,7 +50,8 @@ export async function POST(request: Request) {
       );
     }
 
-    const trackedUsers = await readTrackedUsers();
+    const appData = await readAppData();
+    const trackedUsers = appData.trackedUsers;
     if (trackedUsers.some((user) => user.username === username)) {
       return NextResponse.json(
         { error: "User is already tracked." },
@@ -53,12 +66,17 @@ export async function POST(request: Request) {
 
     trackedUsers.push(newUser);
     trackedUsers.sort((a, b) => a.username.localeCompare(b.username));
-    await writeTrackedUsers(trackedUsers);
+    await writeAppData({
+      ...appData,
+      trackedUsers,
+      metricsSnapshot: null,
+    });
 
     return NextResponse.json({ user: newUser }, { status: 201 });
   }
 
-  const trackedUsers = await readTrackedUsers();
+  const appData = await readAppData();
+  const trackedUsers = appData.trackedUsers;
   const trackedUsernames = new Set(trackedUsers.map((user) => user.username));
   const usernamesInPayload = new Set<string>();
   const batchResult: AddUsersBatchResult = {
@@ -124,7 +142,11 @@ export async function POST(request: Request) {
 
   if (batchResult.addedUsers.length > 0) {
     trackedUsers.sort((a, b) => a.username.localeCompare(b.username));
-    await writeTrackedUsers(trackedUsers);
+    await writeAppData({
+      ...appData,
+      trackedUsers,
+      metricsSnapshot: null,
+    });
   }
 
   return NextResponse.json(batchResult, { status: 200 });

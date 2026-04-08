@@ -2,14 +2,16 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
-import type { TrackedUser } from "@/types/dashboard";
+import type { MetricsSnapshot, TrackedUser } from "@/types/dashboard";
 
-type AppData = {
+export type AppData = {
   trackedUsers: TrackedUser[];
+  metricsSnapshot: MetricsSnapshot | null;
 };
 
 const DEFAULT_APP_DATA: AppData = {
   trackedUsers: [],
+  metricsSnapshot: null,
 };
 
 export const APP_DATA_PATH_ENV = "GIT_CONTRIBUTE_APP_DATA_PATH";
@@ -60,9 +62,39 @@ function validateAppData(data: unknown, filePath: string): AppData {
     }
   }
 
+  const metricsSnapshot = (data as { metricsSnapshot?: unknown }).metricsSnapshot;
+  if (metricsSnapshot !== undefined && metricsSnapshot !== null) {
+    validateMetricsSnapshot(metricsSnapshot, filePath);
+  }
+
   return {
     trackedUsers: trackedUsers as TrackedUser[],
+    metricsSnapshot: (metricsSnapshot ?? null) as MetricsSnapshot | null,
   };
+}
+
+function validateMetricsSnapshot(snapshot: unknown, filePath: string) {
+  if (!snapshot || typeof snapshot !== "object") {
+    throw new Error(
+      `App data file is malformed at ${filePath}. metricsSnapshot must be null or an object.`,
+    );
+  }
+
+  const typedSnapshot = snapshot as Record<string, unknown>;
+  if (
+    typeof typedSnapshot.fetchedAt !== "number" ||
+    typeof typedSnapshot.historyDays !== "number" ||
+    !typedSnapshot.perUserContributions ||
+    typeof typedSnapshot.perUserContributions !== "object" ||
+    !Array.isArray(typedSnapshot.aggregates) ||
+    typeof typedSnapshot.partialData !== "boolean" ||
+    !Array.isArray(typedSnapshot.successfulUsers) ||
+    !Array.isArray(typedSnapshot.failedUsers)
+  ) {
+    throw new Error(
+      `App data file is malformed at ${filePath}. metricsSnapshot is missing required fields.`,
+    );
+  }
 }
 
 function parseAppData(raw: string, filePath: string) {
@@ -135,5 +167,19 @@ export async function writeTrackedUsers(
   trackedUsers: TrackedUser[],
   filePath = resolveAppDataFilePath(),
 ) {
-  await writeAppData({ trackedUsers }, filePath);
+  const data = await readAppData(filePath);
+  await writeAppData({ ...data, trackedUsers }, filePath);
+}
+
+export async function readMetricsSnapshot(filePath = resolveAppDataFilePath()) {
+  const data = await readAppData(filePath);
+  return data.metricsSnapshot;
+}
+
+export async function writeMetricsSnapshot(
+  metricsSnapshot: MetricsSnapshot | null,
+  filePath = resolveAppDataFilePath(),
+) {
+  const data = await readAppData(filePath);
+  await writeAppData({ ...data, metricsSnapshot }, filePath);
 }

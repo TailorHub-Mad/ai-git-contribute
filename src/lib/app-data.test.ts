@@ -5,8 +5,10 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  readMetricsSnapshot,
   readTrackedUsers,
   resolveAppDataFilePath,
+  writeMetricsSnapshot,
   writeTrackedUsers,
 } from "./app-data";
 
@@ -39,7 +41,7 @@ describe("app-data", () => {
     await expect(readTrackedUsers(filePath)).resolves.toEqual([]);
 
     await expect(readFile(filePath, "utf8")).resolves.toBe(
-      '{\n  "trackedUsers": []\n}',
+      '{\n  "trackedUsers": [],\n  "metricsSnapshot": null\n}',
     );
   });
 
@@ -52,6 +54,31 @@ describe("app-data", () => {
     await expect(readTrackedUsers(filePath)).resolves.toEqual([
       { username: "alice", addedAt: "2026-04-07T12:00:00.000Z" },
     ]);
+  });
+
+  it("persists metrics snapshots alongside tracked users", async () => {
+    const snapshot = {
+      fetchedAt: Date.parse("2026-04-08T12:00:00.000Z"),
+      historyDays: 30,
+      perUserContributions: {
+        alice: [],
+      },
+      aggregates: [],
+      partialData: false,
+      successfulUsers: ["alice"],
+      failedUsers: [],
+    };
+
+    await writeTrackedUsers(
+      [{ username: "alice", addedAt: "2026-04-07T12:00:00.000Z" }],
+      filePath,
+    );
+    await writeMetricsSnapshot(snapshot, filePath);
+
+    await expect(readTrackedUsers(filePath)).resolves.toEqual([
+      { username: "alice", addedAt: "2026-04-07T12:00:00.000Z" },
+    ]);
+    await expect(readMetricsSnapshot(filePath)).resolves.toEqual(snapshot);
   });
 
   it("fails clearly when the data file is malformed", async () => {

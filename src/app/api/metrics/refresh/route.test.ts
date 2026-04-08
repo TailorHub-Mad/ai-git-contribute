@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@/lib/app-data", () => ({
-  readTrackedUsers: vi.fn().mockResolvedValue([
-    { username: "alice", addedAt: "2026-04-07T12:00:00.000Z" },
-  ]),
+  readAppData: vi.fn().mockResolvedValue({
+    trackedUsers: [{ username: "alice", addedAt: "2026-04-07T12:00:00.000Z" }],
+    metricsSnapshot: null,
+  }),
+  writeAppData: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/metrics", async () => {
@@ -33,7 +35,7 @@ vi.mock("@/lib/metrics", async () => {
   };
 });
 
-import { readTrackedUsers } from "@/lib/app-data";
+import { readAppData, writeAppData } from "@/lib/app-data";
 import { GITHUB_TOKEN_HEADER } from "@/lib/github-token";
 import { MAX_HISTORY_DAYS, refreshMetrics } from "@/lib/metrics";
 
@@ -63,7 +65,16 @@ describe("POST /api/metrics/refresh", () => {
       historyDays: MAX_HISTORY_DAYS,
       token: "ui-token",
     });
-    expect(readTrackedUsers).toHaveBeenCalledOnce();
+    expect(readAppData).toHaveBeenCalledOnce();
+    expect(writeAppData).toHaveBeenCalledWith({
+      trackedUsers: [
+        { username: "alice", addedAt: "2026-04-07T12:00:00.000Z" },
+      ],
+      metricsSnapshot: expect.objectContaining({
+        historyDays: MAX_HISTORY_DAYS,
+        successfulUsers: ["alice"],
+      }),
+    });
 
     await expect(response.json()).resolves.toMatchObject({
       usersCount: 1,

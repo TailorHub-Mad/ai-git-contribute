@@ -1,20 +1,26 @@
 import { NextResponse } from "next/server";
 
 import { GITHUB_TOKEN_HEADER, trimGithubToken } from "@/lib/github-token";
-import { readTrackedUsers } from "@/lib/app-data";
+import { readAppData, writeAppData } from "@/lib/app-data";
 import { MAX_HISTORY_DAYS, refreshMetrics } from "@/lib/metrics";
 
 export async function POST(request: Request) {
   try {
-    const trackedUsers = await readTrackedUsers();
+    const appData = await readAppData();
     const payload = await refreshMetrics({
-      trackedUsers,
+      trackedUsers: appData.trackedUsers,
       historyDays: MAX_HISTORY_DAYS,
       token:
         trimGithubToken(request.headers.get(GITHUB_TOKEN_HEADER)) ??
         trimGithubToken(process.env.GITHUB_TOKEN) ??
         undefined,
     });
+
+    await writeAppData({
+      ...appData,
+      metricsSnapshot: payload.snapshot,
+    });
+
     return NextResponse.json(payload);
   } catch (error) {
     const message =

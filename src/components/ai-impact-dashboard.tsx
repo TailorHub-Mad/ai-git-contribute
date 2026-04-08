@@ -24,7 +24,9 @@ import {
 import type {
   AddUsersBatchResult,
   AIMarker,
+  ContributionBreakdownPoint,
   DashboardSeries,
+  DailyTeamAggregate,
   MetricsRefreshResponse,
   MetricsSnapshot,
   TimeGranularity,
@@ -33,7 +35,9 @@ import type {
 import { buildDashboardSeries } from "@/lib/dashboard-series";
 import { GITHUB_TOKEN_HEADER } from "@/lib/github-token";
 
-type UsersResponse = { users: TrackedUser[] } | { error: string };
+type UsersResponse =
+  | { users: TrackedUser[]; snapshot: MetricsSnapshot | null }
+  | { error: string };
 type UserSuggestion = {
   username: string;
   avatarUrl: string;
@@ -86,6 +90,8 @@ const GRANULARITY_OPTIONS: Array<{ label: string; value: TimeGranularity }> = [
   { label: "Monthly", value: "month" },
   { label: "Yearly", value: "year" },
 ];
+
+const ALL_USERS_FILTER_VALUE = "__all-users__";
 
 const DEFAULT_LINE_VISIBILITY: LineVisibilityState = {
   grouped: true,
@@ -266,6 +272,60 @@ function getGranularityUnitLabel(granularity: TimeGranularity) {
   return "year";
 }
 
+function pluralize(label: string, count: number) {
+  return count === 1 ? label : `${label}s`;
+}
+
+function buildSelectedUserAggregates(
+  snapshot: MetricsSnapshot,
+  points: ContributionBreakdownPoint[],
+): DailyTeamAggregate[] {
+  if (snapshot.aggregates.length === 0) {
+    return points.map((point) => ({
+      date: point.date,
+      totalContributions: point.total,
+    }));
+  }
+
+  const totalsByDate = new Map(points.map((point) => [point.date, point.total]));
+
+  return snapshot.aggregates.map((point) => ({
+    date: point.date,
+    totalContributions: totalsByDate.get(point.date) ?? 0,
+  }));
+}
+
+export function filterMetricsSnapshotByUsername(
+  snapshot: MetricsSnapshot | null,
+  username: string | null,
+): MetricsSnapshot | null {
+  if (!snapshot || !username) {
+    return snapshot;
+  }
+
+  const points = snapshot.perUserContributions[username];
+
+  if (!points) {
+    return {
+      ...snapshot,
+      perUserContributions: {},
+      aggregates: [],
+      partialData: true,
+      successfulUsers: [],
+      failedUsers: [username],
+    };
+  }
+
+  return {
+    ...snapshot,
+    perUserContributions: { [username]: points },
+    aggregates: buildSelectedUserAggregates(snapshot, points),
+    partialData: false,
+    successfulUsers: [username],
+    failedUsers: [],
+  };
+}
+
 function formatSignedNumber(value: number, maximumFractionDigits = 2) {
   const formatted = Math.abs(value).toLocaleString("en", {
     minimumFractionDigits: 0,
@@ -331,6 +391,9 @@ export function AIImpactDashboard() {
   const [selectedRange, setSelectedRange] = useState("90d");
   const [selectedGranularity, setSelectedGranularity] =
     useState<TimeGranularity>("day");
+  const [selectedUserFilter, setSelectedUserFilter] = useState(
+    ALL_USERS_FILTER_VALUE,
+  );
   const [lineVisibility, setLineVisibility] = useState<LineVisibilityState>(
     DEFAULT_LINE_VISIBILITY,
   );
@@ -368,6 +431,7 @@ export function AIImpactDashboard() {
     }
 
     setUsers(payload.users);
+    setMetricsSnapshot(payload.snapshot);
     return payload.users;
   }
 
@@ -427,6 +491,15 @@ export function AIImpactDashboard() {
   }, []);
 
   useEffect(() => {
+    if (
+      selectedUserFilter !== ALL_USERS_FILTER_VALUE &&
+      !users.some((user) => user.username === selectedUserFilter)
+    ) {
+      setSelectedUserFilter(ALL_USERS_FILTER_VALUE);
+    }
+  }, [selectedUserFilter, users]);
+
+  useEffect(() => {
     const query = usernameInput.trim();
 
     if (query.length < 2 || isBatchInput) {
@@ -477,19 +550,29 @@ export function AIImpactDashboard() {
     }));
   }, []);
 
+  const selectedUsername =
+    selectedUserFilter === ALL_USERS_FILTER_VALUE ? null : selectedUserFilter;
+  const selectedUserLabel = selectedUsername ?? "All tracked users";
+  const isSingleUserView = selectedUsername !== null;
+
+  const filteredMetricsSnapshot = useMemo(() => {
+    return filterMetricsSnapshotByUsername(metricsSnapshot, selectedUsername);
+  }, [metricsSnapshot, selectedUsername]);
+
   const metrics = useMemo<DashboardSeries>(() => {
     return buildDashboardSeries({
-      snapshot: metricsSnapshot,
-      usersCount: users.length,
+      snapshot: filteredMetricsSnapshot,
+      usersCount: selectedUsername ? 1 : users.length,
       rangeDays: parseSelectedRange(selectedRange),
       includeDefaultMilestones,
       granularity: selectedGranularity,
     });
   }, [
+    filteredMetricsSnapshot,
     includeDefaultMilestones,
-    metricsSnapshot,
     selectedGranularity,
     selectedRange,
+    selectedUsername,
     users.length,
   ]);
 
@@ -519,24 +602,48 @@ export function AIImpactDashboard() {
       metrics.usersInDenominator > 0
         ? Number((selectedRangeTotal / metrics.usersInDenominator).toFixed(2))
         : 0;
+    const selectedRangeAveragePerBucket =
+      metrics.totalContributions.length > 0
+        ? Number((selectedRangeTotal / metrics.totalContributions.length).toFixed(2))
+        : 0;
 
     return {
       selectedRangeTotal,
+      selectedRangeAveragePerBucket,
       selectedRangePerUserAverage,
     };
   }, [metrics]);
 
-  const { selectedRangeTotal, selectedRangePerUserAverage } = summaryMetrics;
+  const {
+    selectedRangeTotal,
+    selectedRangeAveragePerBucket,
+    selectedRangePerUserAverage,
+  } = summaryMetrics;
   const usersInDenominator = metrics.usersInDenominator;
   const failedUsers = metrics.failedUsers;
   const failedUsersPreview = failedUsers.slice(0, 4);
+  const hasSelectedUserSnapshotData =
+    selectedUsername === null ||
+    Boolean(metricsSnapshot?.perUserContributions[selectedUsername]);
+  const secondarySummaryValue = isSingleUserView
+    ? selectedRangeAveragePerBucket
+    : selectedRangePerUserAverage;
+  const secondarySummaryTitle = isSingleUserView
+    ? `Avg per ${getGranularityUnitLabel(selectedGranularity)}`
+    : "Per-user average";
+  const secondarySummaryDescription = isSingleUserView
+    ? `Across ${metrics.dates.length.toLocaleString("en")} visible ${pluralize(
+        getGranularityUnitLabel(selectedGranularity),
+        metrics.dates.length,
+      )}`
+    : "Across users in denominator";
 
-  const formattedSummaryPerUserAverage = useMemo(() => {
-    return selectedRangePerUserAverage.toLocaleString("en", {
-      minimumFractionDigits: Number.isInteger(selectedRangePerUserAverage) ? 0 : 2,
+  const formattedSecondarySummaryValue = useMemo(() => {
+    return secondarySummaryValue.toLocaleString("en", {
+      minimumFractionDigits: Number.isInteger(secondarySummaryValue) ? 0 : 2,
       maximumFractionDigits: 2,
     });
-  }, [selectedRangePerUserAverage]);
+  }, [secondarySummaryValue]);
 
   const visibleMarkers = useMemo(() => {
     const dateSet = new Set(chartData.map((point) => point.date));
@@ -1001,6 +1108,9 @@ export function AIImpactDashboard() {
                 Contribution trend ({selectedGranularity} view)
               </h2>
               <p className="text-xs text-slate-400">
+                Viewing: {selectedUserLabel}
+              </p>
+              <p className="text-xs text-slate-400">
                 Last updated:{" "}
                 {metrics.lastUpdatedAt ? formatDateTime(metrics.lastUpdatedAt) : "Never"}
               </p>
@@ -1048,6 +1158,27 @@ export function AIImpactDashboard() {
                 </div>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-2">
+                <select
+                  aria-label="Focus on tracked user"
+                  className={SELECT_CONTROL_CLASS}
+                  style={{ colorScheme: "dark" }}
+                  value={selectedUserFilter}
+                  onChange={(event) => setSelectedUserFilter(event.target.value)}
+                  disabled={users.length === 0}
+                >
+                  <option value={ALL_USERS_FILTER_VALUE} className={SELECT_OPTION_CLASS}>
+                    All users
+                  </option>
+                  {users.map((user) => (
+                    <option
+                      key={user.username}
+                      value={user.username}
+                      className={SELECT_OPTION_CLASS}
+                    >
+                      {user.username}
+                    </option>
+                  ))}
+                </select>
                 <select
                   className={SELECT_CONTROL_CLASS}
                   style={{ colorScheme: "dark" }}
@@ -1156,8 +1287,11 @@ export function AIImpactDashboard() {
             </div>
           ) : chartData.length === 0 ? (
             <div className="rounded-lg bg-slate-800 p-4 text-sm text-slate-400">
-              No chart data yet. Add a GitHub token above if needed, then click
-              refresh data.
+              {selectedUsername && metricsSnapshot
+                ? hasSelectedUserSnapshotData
+                  ? `No visible chart data for ${selectedUsername} in this range.`
+                  : `${selectedUsername} is not included in the latest refresh. Refresh data to try again.`
+                : "No chart data yet. Add a GitHub token above if needed, then click refresh data."}
             </div>
           ) : (
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
@@ -1177,13 +1311,13 @@ export function AIImpactDashboard() {
                   </div>
                   <div className="rounded-lg border border-slate-700/80 bg-slate-900/60 px-3 py-2 text-sm text-slate-300">
                     <p className="text-xs uppercase tracking-wide text-slate-400">
-                      Per-user average
+                      {secondarySummaryTitle}
                     </p>
                     <p className="mt-1 text-xl font-semibold text-slate-100">
-                      {formattedSummaryPerUserAverage}
+                      {formattedSecondarySummaryValue}
                     </p>
                     <p className="mt-1 text-xs text-slate-400">
-                      Across users in denominator
+                      {secondarySummaryDescription}
                     </p>
                     <p className="mt-1 text-xs text-slate-500">{selectedPeriodLabel}</p>
                   </div>
@@ -1237,7 +1371,7 @@ export function AIImpactDashboard() {
                           stroke="#2ea043"
                           strokeWidth={2}
                           dot={false}
-                          name="Grouped per-user"
+                          name={isSingleUserView ? "Grouped contributions" : "Grouped per-user"}
                         />
                       ) : null}
                       {lineVisibility.commits ? (
@@ -1247,7 +1381,7 @@ export function AIImpactDashboard() {
                           stroke="#38bdf8"
                           strokeWidth={2}
                           dot={false}
-                          name="Commits per-user"
+                          name={isSingleUserView ? "Commits" : "Commits per-user"}
                         />
                       ) : null}
                       {lineVisibility.pullRequests ? (
@@ -1257,7 +1391,7 @@ export function AIImpactDashboard() {
                           stroke="#d946ef"
                           strokeWidth={2}
                           dot={false}
-                          name="PRs per-user"
+                          name={isSingleUserView ? "PRs" : "PRs per-user"}
                         />
                       ) : null}
                       {lineVisibility.pullRequestReviews ? (
@@ -1267,7 +1401,7 @@ export function AIImpactDashboard() {
                           stroke="#f97316"
                           strokeWidth={2}
                           dot={false}
-                          name="Reviews per-user"
+                          name={isSingleUserView ? "Reviews" : "Reviews per-user"}
                         />
                       ) : null}
                       {lineVisibility.issues ? (
@@ -1277,7 +1411,7 @@ export function AIImpactDashboard() {
                           stroke="#f59e0b"
                           strokeWidth={2}
                           dot={false}
-                          name="Issues per-user"
+                          name={isSingleUserView ? "Issues" : "Issues per-user"}
                         />
                       ) : null}
                       {lineVisibility.movingAvg ? (
