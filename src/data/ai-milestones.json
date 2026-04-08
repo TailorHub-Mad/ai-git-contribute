@@ -1,0 +1,107 @@
+[
+  {
+    "date": "2021-06-29",
+    "tool": "GitHub Copilot",
+    "label": "Technical preview"
+  },
+  {
+    "date": "2021-08-10",
+    "tool": "OpenAI Codex",
+    "label": "Original model"
+  },
+  {
+    "date": "2021-10-29",
+    "tool": "GitHub Copilot JetBrains Plugin",
+    "label": "Earliest public evidence is community/plugin-era evidence"
+  },
+  {
+    "date": "2022-11-30",
+    "tool": "ChatGPT",
+    "label": "Launch"
+  },
+  {
+    "date": "2023-03-14",
+    "tool": "GPT-4",
+    "label": "Launch"
+  },
+  {
+    "date": "2023-03-14",
+    "tool": "Claude",
+    "label": "Launch"
+  },
+  {
+    "date": "2023-03-24",
+    "tool": "Cursor",
+    "label": "Earliest verifiable public launch evidence"
+  },
+  {
+    "date": "2023-07-11",
+    "tool": "Claude 2",
+    "label": "Launch"
+  },
+  {
+    "date": "2024-03-04",
+    "tool": "Claude 3",
+    "label": "Launch"
+  },
+  {
+    "date": "2024-07-22",
+    "tool": "Cline / Claude Dev",
+    "label": "Earliest verifiable public evidence"
+  },
+  {
+    "date": "2024-11-25",
+    "tool": "MCP",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-02-24",
+    "tool": "Claude Code",
+    "label": "Research preview"
+  },
+  {
+    "date": "2025-05-16",
+    "tool": "Codex Agent",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-05-22",
+    "tool": "Claude 4",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-05-22",
+    "tool": "Claude Opus 4",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-05-22",
+    "tool": "Claude Sonnet 4",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-05-22",
+    "tool": "Claude Code",
+    "label": "GA"
+  },
+  {
+    "date": "2025-06-04",
+    "tool": "Cursor 1.0",
+    "label": "Launch"
+  },
+  {
+    "date": "2025-08-07",
+    "tool": "GPT-5",
+    "label": "Launch"
+  },
+  {
+    "date": "2026-02-02",
+    "tool": "Codex App",
+    "label": "Launch"
+  },
+  {
+    "date": "2026-02-05",
+    "tool": "GPT-5.3-Codex",
+    "label": "Launch"
+  }
+]
