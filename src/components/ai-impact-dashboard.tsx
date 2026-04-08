@@ -91,8 +91,6 @@ const GRANULARITY_OPTIONS: Array<{ label: string; value: TimeGranularity }> = [
   { label: "Yearly", value: "year" },
 ];
 
-const ALL_USERS_FILTER_VALUE = "__all-users__";
-
 const DEFAULT_LINE_VISIBILITY: LineVisibilityState = {
   grouped: true,
   commits: false,
@@ -295,34 +293,127 @@ function buildSelectedUserAggregates(
   }));
 }
 
-export function filterMetricsSnapshotByUsername(
+function buildMultiUserAggregates(
+  snapshot: MetricsSnapshot,
+  perUserContributions: Record<string, ContributionBreakdownPoint[]>,
+): DailyTeamAggregate[] {
+  if (snapshot.aggregates.length === 0) {
+    const totalsByDate = new Map<string, number>();
+
+    for (const points of Object.values(perUserContributions)) {
+      for (const point of points) {
+        totalsByDate.set(point.date, (totalsByDate.get(point.date) ?? 0) + point.total);
+      }
+    }
+
+    return Array.from(totalsByDate.entries())
+      .sort(([leftDate], [rightDate]) => leftDate.localeCompare(rightDate))
+      .map(([date, totalContributions]) => ({ date, totalContributions }));
+  }
+
+  const totalsByDate = new Map<string, number>();
+
+  for (const points of Object.values(perUserContributions)) {
+    for (const point of points) {
+      totalsByDate.set(point.date, (totalsByDate.get(point.date) ?? 0) + point.total);
+    }
+  }
+
+  return snapshot.aggregates.map((point) => ({
+    date: point.date,
+    totalContributions: totalsByDate.get(point.date) ?? 0,
+  }));
+}
+
+function formatSelectedUsersLabel(usernames: string[]) {
+  if (usernames.length === 0) {
+    return "All tracked users";
+  }
+
+  if (usernames.length <= 2) {
+    return usernames.join(", ");
+  }
+
+  return `${usernames.length.toLocaleString("en")} selected users`;
+}
+
+function normalizeSelectedUsernames(
+  usernames: string[] | null,
+  users: TrackedUser[],
+): string[] | null {
+  if (usernames === null) {
+    return null;
+  }
+  if (usernames.length === 0) {
+    return usernames;
+  }
+
+  const uniqueUsernames = Array.from(new Set(usernames));
+  const availableUsernames = new Set(users.map((user) => user.username));
+  const next = uniqueUsernames.filter((username) => availableUsernames.has(username));
+
+  return next.length === users.length ? null : next;
+}
+
+export function filterMetricsSnapshotByUsernames(
   snapshot: MetricsSnapshot | null,
-  username: string | null,
+  usernames: string[] | null,
 ): MetricsSnapshot | null {
-  if (!snapshot || !username) {
+  if (!snapshot || usernames === null) {
     return snapshot;
   }
 
-  const points = snapshot.perUserContributions[username];
+  if (usernames.length === 0) {
+    return {
+      ...snapshot,
+      perUserContributions: {},
+      aggregates: [],
+      successfulUsers: [],
+      failedUsers: [],
+    };
+  }
 
-  if (!points) {
+  const filteredEntries = usernames.map(
+    (username) => [username, snapshot.perUserContributions[username]] as const,
+  );
+  const successfulUsers = filteredEntries
+    .filter((entry): entry is readonly [string, ContributionBreakdownPoint[]] =>
+      Boolean(entry[1]),
+    )
+    .map(([username]) => username);
+  const failedUsers = filteredEntries
+    .filter((entry) => !entry[1])
+    .map(([username]) => username);
+
+  if (successfulUsers.length === 0) {
     return {
       ...snapshot,
       perUserContributions: {},
       aggregates: [],
       partialData: true,
-      successfulUsers: [],
-      failedUsers: [username],
+      successfulUsers,
+      failedUsers,
     };
   }
 
+  const perUserContributions = Object.fromEntries(
+    filteredEntries.filter(
+      (entry): entry is readonly [string, ContributionBreakdownPoint[]] => Boolean(entry[1]),
+    ),
+  );
+
+  const aggregates =
+    successfulUsers.length === 1
+      ? buildSelectedUserAggregates(snapshot, perUserContributions[successfulUsers[0]])
+      : buildMultiUserAggregates(snapshot, perUserContributions);
+
   return {
     ...snapshot,
-    perUserContributions: { [username]: points },
-    aggregates: buildSelectedUserAggregates(snapshot, points),
-    partialData: false,
-    successfulUsers: [username],
-    failedUsers: [],
+    perUserContributions,
+    aggregates,
+    partialData: failedUsers.length > 0,
+    successfulUsers,
+    failedUsers,
   };
 }
 
@@ -391,9 +482,9 @@ export function AIImpactDashboard() {
   const [selectedRange, setSelectedRange] = useState("90d");
   const [selectedGranularity, setSelectedGranularity] =
     useState<TimeGranularity>("day");
-  const [selectedUserFilter, setSelectedUserFilter] = useState(
-    ALL_USERS_FILTER_VALUE,
-  );
+  const [selectedUsernames, setSelectedUsernames] = useState<string[] | null>(null);
+  const [isUserFilterOpen, setIsUserFilterOpen] = useState(false);
+  const [userSearch, setUserSearch] = useState("");
   const [lineVisibility, setLineVisibility] = useState<LineVisibilityState>(
     DEFAULT_LINE_VISIBILITY,
   );
@@ -409,6 +500,7 @@ export function AIImpactDashboard() {
   const [userAddSummary, setUserAddSummary] = useState<string | null>(null);
   const [userSuggestions, setUserSuggestions] = useState<UserSuggestion[]>([]);
   const githubTokenRef = useRef(githubToken);
+  const userFilterRef = useRef<HTMLDivElement | null>(null);
   const isBatchInput = /[,\s]/.test(usernameInput);
   const isAddUsersInProgress = activeOperation === "addUsers";
   const isRefreshInProgress = activeOperation === "refreshMetrics";
@@ -491,13 +583,25 @@ export function AIImpactDashboard() {
   }, []);
 
   useEffect(() => {
-    if (
-      selectedUserFilter !== ALL_USERS_FILTER_VALUE &&
-      !users.some((user) => user.username === selectedUserFilter)
-    ) {
-      setSelectedUserFilter(ALL_USERS_FILTER_VALUE);
+    setSelectedUsernames((current) => {
+      const next = normalizeSelectedUsernames(current, users);
+      if (next === null && current === null) return current;
+      if (next === null || current === null) return next;
+      return next.length === current.length ? current : next;
+    });
+  }, [users]);
+
+  useEffect(() => {
+    function handlePointerDown(event: MouseEvent) {
+      if (!userFilterRef.current?.contains(event.target as Node)) {
+        setIsUserFilterOpen(false);
+        setUserSearch("");
+      }
     }
-  }, [selectedUserFilter, users]);
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, []);
 
   useEffect(() => {
     const query = usernameInput.trim();
@@ -550,19 +654,19 @@ export function AIImpactDashboard() {
     }));
   }, []);
 
-  const selectedUsername =
-    selectedUserFilter === ALL_USERS_FILTER_VALUE ? null : selectedUserFilter;
-  const selectedUserLabel = selectedUsername ?? "All tracked users";
-  const isSingleUserView = selectedUsername !== null;
+  const selectedUserLabel = formatSelectedUsersLabel(selectedUsernames ?? []);
+  const isSingleUserView = selectedUsernames !== null && selectedUsernames.length === 1;
+  const selectedUsersCount =
+    selectedUsernames === null ? users.length : selectedUsernames.length;
 
   const filteredMetricsSnapshot = useMemo(() => {
-    return filterMetricsSnapshotByUsername(metricsSnapshot, selectedUsername);
-  }, [metricsSnapshot, selectedUsername]);
+    return filterMetricsSnapshotByUsernames(metricsSnapshot, selectedUsernames);
+  }, [metricsSnapshot, selectedUsernames]);
 
   const metrics = useMemo<DashboardSeries>(() => {
     return buildDashboardSeries({
       snapshot: filteredMetricsSnapshot,
-      usersCount: selectedUsername ? 1 : users.length,
+      usersCount: selectedUsersCount,
       rangeDays: parseSelectedRange(selectedRange),
       includeDefaultMilestones,
       granularity: selectedGranularity,
@@ -572,8 +676,7 @@ export function AIImpactDashboard() {
     includeDefaultMilestones,
     selectedGranularity,
     selectedRange,
-    selectedUsername,
-    users.length,
+    selectedUsersCount,
   ]);
 
   const chartData = useMemo(() => {
@@ -623,8 +726,10 @@ export function AIImpactDashboard() {
   const failedUsers = metrics.failedUsers;
   const failedUsersPreview = failedUsers.slice(0, 4);
   const hasSelectedUserSnapshotData =
-    selectedUsername === null ||
-    Boolean(metricsSnapshot?.perUserContributions[selectedUsername]);
+    selectedUsernames === null ||
+    selectedUsernames.some(
+      (username) => Boolean(metricsSnapshot?.perUserContributions[username]),
+    );
   const secondarySummaryValue = isSingleUserView
     ? selectedRangeAveragePerBucket
     : selectedRangePerUserAverage;
@@ -636,7 +741,33 @@ export function AIImpactDashboard() {
         getGranularityUnitLabel(selectedGranularity),
         metrics.dates.length,
       )}`
-    : "Across users in denominator";
+    : `Across ${metrics.usersInDenominator.toLocaleString("en")} selected ${pluralize("user", metrics.usersInDenominator)}`;
+
+  const areAllUsersSelected = selectedUsernames === null;
+
+  const toggleSelectedUsername = useCallback((username: string) => {
+    setSelectedUsernames((current) => {
+      if (current === null) {
+        return users
+          .map((user) => user.username)
+          .filter((currentUsername) => currentUsername !== username);
+      }
+
+      if (current.includes(username)) {
+        return current.filter((currentUsername) => currentUsername !== username);
+      }
+
+      return normalizeSelectedUsernames([...current, username], users);
+    });
+  }, [users]);
+
+  const selectAllUsers = useCallback(() => {
+    setSelectedUsernames(null);
+  }, []);
+
+  const clearAllUsers = useCallback(() => {
+    setSelectedUsernames([]);
+  }, []);
 
   const formattedSecondarySummaryValue = useMemo(() => {
     return secondarySummaryValue.toLocaleString("en", {
@@ -1009,9 +1140,9 @@ export function AIImpactDashboard() {
                 onBlur={() => {
                   window.setTimeout(() => setIsUserSuggestionsOpen(false), 100);
                 }}
-                placeholder={"torvalds\ngaearon, vercel"}
+                placeholder={"torvalds, gaearon, vercel"}
                 autoComplete="off"
-                rows={2}
+                rows={1}
               />
 
               {isUserSuggestionsOpen &&
@@ -1158,27 +1289,86 @@ export function AIImpactDashboard() {
                 </div>
               ) : null}
               <div className="flex flex-wrap items-center justify-end gap-2">
-                <select
-                  aria-label="Focus on tracked user"
-                  className={SELECT_CONTROL_CLASS}
-                  style={{ colorScheme: "dark" }}
-                  value={selectedUserFilter}
-                  onChange={(event) => setSelectedUserFilter(event.target.value)}
-                  disabled={users.length === 0}
-                >
-                  <option value={ALL_USERS_FILTER_VALUE} className={SELECT_OPTION_CLASS}>
-                    All users
-                  </option>
-                  {users.map((user) => (
-                    <option
-                      key={user.username}
-                      value={user.username}
-                      className={SELECT_OPTION_CLASS}
-                    >
-                      {user.username}
-                    </option>
-                  ))}
-                </select>
+                <div className="relative" ref={userFilterRef}>
+                  <button
+                    type="button"
+                    aria-haspopup="dialog"
+                    aria-expanded={isUserFilterOpen}
+                    aria-label="Filter tracked users"
+                    className={`${SELECT_CONTROL_CLASS} min-w-52 text-left`}
+                    onClick={() => setIsUserFilterOpen((current) => !current)}
+                    disabled={users.length === 0}
+                  >
+                    {selectedUserLabel}
+                  </button>
+                  {isUserFilterOpen ? (
+                    <div className="absolute right-0 z-20 mt-2 w-72 rounded-xl border border-slate-700 bg-slate-950/95 p-3 shadow-lg shadow-black/40">
+                      <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          User filter
+                        </p>
+                        <button
+                          type="button"
+                          className="text-xs text-slate-400 transition hover:text-slate-200"
+                          onClick={() => { setIsUserFilterOpen(false); setUserSearch(""); }}
+                        >
+                          Close
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Search users…"
+                        value={userSearch}
+                        onChange={(e) => setUserSearch(e.target.value)}
+                        className="mt-3 w-full rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-xs text-slate-200 placeholder-slate-500 outline-none focus:border-slate-500"
+                      />
+                      <div className="mt-2 flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={selectAllUsers}
+                          className="rounded-md border border-slate-700 px-2 py-1 text-xs text-slate-200 transition hover:border-slate-600 hover:bg-slate-900"
+                        >
+                          All users
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearAllUsers}
+                          className="text-[11px] text-slate-500 transition hover:text-slate-300"
+                        >
+                          Clear users
+                        </button>
+                      </div>
+                      <div className="mt-2 max-h-[224px] space-y-1 overflow-y-auto pr-1">
+                        {users
+                          .filter((user) =>
+                            user.username.toLowerCase().includes(userSearch.toLowerCase()),
+                          )
+                          .map((user) => {
+                          const isChecked =
+                            areAllUsersSelected || (selectedUsernames?.includes(user.username) ?? false);
+
+                          return (
+                            <label
+                              key={user.username}
+                              className="flex cursor-pointer items-center gap-3 rounded-lg px-2 py-2 text-sm text-slate-200 transition hover:bg-slate-900"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={() => toggleSelectedUsername(user.username)}
+                                className="h-4 w-4 rounded border-slate-600 bg-slate-900 text-blue-500 focus:ring-blue-500"
+                              />
+                              <span className="min-w-0 truncate">{user.username}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+                      <p className="mt-3 text-xs text-slate-500">
+                        Toggle any combination of users to aggregate just that subset.
+                      </p>
+                    </div>
+                  ) : null}
+                </div>
                 <select
                   className={SELECT_CONTROL_CLASS}
                   style={{ colorScheme: "dark" }}
@@ -1287,10 +1477,10 @@ export function AIImpactDashboard() {
             </div>
           ) : chartData.length === 0 ? (
             <div className="rounded-lg bg-slate-800 p-4 text-sm text-slate-400">
-              {selectedUsername && metricsSnapshot
+              {selectedUsernames !== null && selectedUsernames.length > 0 && metricsSnapshot
                 ? hasSelectedUserSnapshotData
-                  ? `No visible chart data for ${selectedUsername} in this range.`
-                  : `${selectedUsername} is not included in the latest refresh. Refresh data to try again.`
+                  ? `No visible chart data for ${selectedUserLabel} in this range.`
+                  : `${selectedUserLabel} ${selectedUsernames.length === 1 ? "is" : "are"} not included in the latest refresh. Refresh data to try again.`
                 : "No chart data yet. Add a GitHub token above if needed, then click refresh data."}
             </div>
           ) : (
