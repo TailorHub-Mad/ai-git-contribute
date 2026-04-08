@@ -1,4 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import type { TrackedUser } from "@/types/dashboard";
@@ -13,13 +14,23 @@ const DEFAULT_APP_DATA: AppData = {
 
 export const APP_DATA_PATH_ENV = "GIT_CONTRIBUTE_APP_DATA_PATH";
 
+const APP_DATA_FILE_NAME = "app-state.json";
+
+function resolveBundledAppDataFilePath() {
+  return join(process.cwd(), "data", APP_DATA_FILE_NAME);
+}
+
 export function resolveAppDataFilePath() {
   const overridePath = process.env[APP_DATA_PATH_ENV]?.trim();
   if (overridePath) {
     return overridePath;
   }
 
-  return join(process.cwd(), "data", "app-state.json");
+  if (process.env.VERCEL) {
+    return join(tmpdir(), "git-contribute", APP_DATA_FILE_NAME);
+  }
+
+  return resolveBundledAppDataFilePath();
 }
 
 function validateAppData(data: unknown, filePath: string): AppData {
@@ -54,6 +65,38 @@ function validateAppData(data: unknown, filePath: string): AppData {
   };
 }
 
+function parseAppData(raw: string, filePath: string) {
+  let parsed: unknown;
+
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    throw new Error(
+      `App data file is malformed at ${filePath}. Expected valid JSON.`,
+    );
+  }
+
+  return validateAppData(parsed, filePath);
+}
+
+async function loadBootstrapAppData(filePath: string) {
+  const bundledFilePath = resolveBundledAppDataFilePath();
+  if (filePath === bundledFilePath || !process.env.VERCEL) {
+    return DEFAULT_APP_DATA;
+  }
+
+  try {
+    const raw = await readFile(bundledFilePath, "utf8");
+    return parseAppData(raw, bundledFilePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return DEFAULT_APP_DATA;
+    }
+
+    throw error;
+  }
+}
+
 async function ensureAppDataFile(filePath: string) {
   await mkdir(dirname(filePath), { recursive: true });
 
@@ -64,24 +107,15 @@ async function ensureAppDataFile(filePath: string) {
       throw error;
     }
 
-    await writeFile(filePath, JSON.stringify(DEFAULT_APP_DATA, null, 2), "utf8");
+    const initialData = await loadBootstrapAppData(filePath);
+    await writeFile(filePath, JSON.stringify(initialData, null, 2), "utf8");
   }
 }
 
 export async function readAppData(filePath = resolveAppDataFilePath()) {
   await ensureAppDataFile(filePath);
   const raw = await readFile(filePath, "utf8");
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(
-      `App data file is malformed at ${filePath}. Expected valid JSON.`,
-    );
-  }
-
-  return validateAppData(parsed, filePath);
+  return parseAppData(raw, filePath);
 }
 
 export async function writeAppData(
