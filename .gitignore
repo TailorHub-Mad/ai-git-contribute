@@ -43,3 +43,5 @@ next-env.d.ts
 
 # local app data
 /data/app-state.json
+
+pnpm-lock.yaml
